@@ -1,0 +1,347 @@
+
+```{r, message=FALSE, warning=FALSE}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+```
+
+Cargamos los datos correpondiente
+
+```{r}
+train <-read.csv("C:/Users/bi_ar/Desktop/Tarea/train.csv")
+test <-read.csv("C:/Users/bi_ar/Desktop/Tarea/test.csv")
+
+test$SalePrice<-NA
+train$source<-"TRAIN"
+test$source<-"TEST"
+
+dataset <- rbind(train, test)
+dataset$Id<-NULL
+```
+
+DE manera adicional y revisando la descripción de los datos, se tiene presente que existen variables de tipo factor que pueden estar siendo interpretadas como numéricas. Por ello procedemos a hacer el cambio.
+
+```{r}
+#Cambiando a factor las variables que lo son:
+cat<-c("MSSubClass","OverallQual","OverallCond","PoolQC")
+dataset[,cat] <- lapply(dataset[,cat] , factor)
+
+#Validamos el cambio 
+str(dataset[,cat])
+
+```
+De momento hacemos una revisión general de nuestra variable objetivo 
+
+```{r}
+summary(read.csv("C:/Users/bi_ar/Desktop/Tarea/train.csv")$SalePrice)
+```
+```{r}
+ggplot(data=dataset[!is.na(dataset$SalePrice),], aes(x=SalePrice)) +
+        geom_histogram(fill="blue", binwidth = 50000)+
+        scale_x_continuous(breaks= seq(0, 800000, by=100000), labels = comma)
+```
+
+
+
+Además es importante revisar las variables con las que nuestra variable objetivo se encuentra correlacionada, a fin de excluirlas.
+
+```{r}
+nums <- unlist(lapply(dataset, is.numeric)) 
+name_num<-names(nums[nums==TRUE])
+name_car<-names(nums[nums==FALSE])
+
+length(name_num)
+length(name_car)
+
+cor_nums <- cor(train[,name_num], use="pairwise.complete.obs")
+cor_nums_m<-as.matrix(sort(cor_nums[,"SalePrice"], decreasing = TRUE))
+Top_cpr <- names(which(apply(cor_nums_m, 1, function(x) abs(x)>0.5)))
+top<-cor_nums[Top_cpr, Top_cpr]
+#Matriz de correlaciones
+top
+
+```
+
+Así las variables con mayor correlación respecto al precio de venta 
+GrLivArea  : Superficie total
+GarageCars   : Espacios de estacionamiento
+GarageArea   : Espacio de estacionamiento
+TotalBsmtSF  : Superficie sotano
+X1stFlrSF  : Superficie primer piso 
+
+Para el tratamiento de missing dividiremos el ejercicio por tipo de variable. En el caso de las variables categóricas consideramos iterar en  cada uno d las variables i inputar con "None" en caso de no existir información, y con cero para aquellas variables numéricas.
+
+```{r}
+# Cambio de las variables categóricas a NA
+dataset[,name_car] <- lapply(dataset[,name_car], function(x){
+  if(!is.factor(x)) return(x)
+  x <- factor(x, exclude=NULL)
+  levels(x)[is.na(levels(x))] <- "None"
+  return(x)
+})
+```
+
+LA inputación con cero para variables numéricas excepto SalePrice
+```{r}
+# Cambio de las variables numericas
+ws<-name_num[-34]
+dataset[,ws][is.na(dataset[,ws])] <- 0
+```
+
+Validamos la correcta inputacion de las variables: 
+```{r}
+#Explorando las variables con missing values
+na.cols <- which(colSums(is.na(dataset)) > 0)
+na.cols
+```
+
+Además de las variables con las que ya contamos, es importante cosiderar algunas otras ue pueden ser de importancia para el análisis, por ello: 
+
+```{r}
+# New features
+dataset['Flag_remodelada'] <- ifelse(dataset$YearRemodAdd == dataset$YearBuilt, 0, 1)
+dataset['Flag_nueva']<-ifelse(dataset$YearBuilt == dataset$YrSold, 1, 0) 
+cat<-c("Flag_remodelada","Flag_nueva")
+dataset[,cat] <- lapply(dataset[,cat] , factor)
+
+dataset['Antiguedad']<-as.numeric(2010 - dataset$YearBuilt)
+
+areas <- c('LotFrontage', 'LotArea', 'MasVnrArea', 'BsmtFinSF1', 'BsmtFinSF2', 'BsmtUnfSF',
+           'TotalBsmtSF', 'X1stFlrSF', 'X2ndFlrSF', 'GrLivArea', 'GarageArea', 'WoodDeckSF', 
+           'OpenPorchSF', 'EnclosedPorch', 'X3SsnPorch', 'ScreenPorch', 'LowQualFinSF', 'PoolArea')
+
+dataset['TotalSF'] <- as.numeric(rowSums(dataset[,areas]))
+dataset['TotalInsideSF'] <- as.numeric(dataset$X1stFlrSF + dataset$X2ndFlrSF)
+```
+Dado que algunas variables nos fueron útiles para el ejercicio anterior, y no pueden ser consideradas numéricas por las cuestiones de tiempo que están representando se buscará ajustarlas a tipo factor. 
+
+```{r}
+#Cambiamos algunas variables numéricas a factores: Las fechas
+cambio<-c("YearBuilt","YearRemodAdd","GarageYrBlt","YrSold","MoSold")
+dataset[,cambio] <- lapply(dataset[,cambio] , factor)
+```
+
+Otra de las consideraciones que tenemos en cuenta es la eliminación de aquellas variables que previemente habíamos observado, tenían una alta correlación con nuestra variable objetivo.
+```{r}
+#Borramos variables altamente correlacionadas
+dropVars <- c('YearRemodAdd', 'GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalBsmtSF', 'TotalRmsAbvGrd', 'BsmtFinSF1')
+dataset <- dataset[,!(names(dataset) %in% dropVars)]
+```
+
+
+
+```{r}
+nums <- unlist(lapply(dataset, is.numeric)) 
+name_num<-names(nums[nums==TRUE])
+name_car<-names(nums[nums==FALSE])
+
+name_num <- name_num[!(name_num %in% c('MSSubClass', 'MoSold', 'YrSold', 'SalePrice', 'OverdatasetQual', 'OverdatasetCond'))] 
+
+respa<-dataset
+DFnumeric <- dataset[, names(dataset) %in% name_num]
+
+DFfactors <- dataset[, names(dataset) %in% name_car]
+DFfactors$source<-NULL
+DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
+```
+
+#Normalizando variables numéricas
+La asimetría es una medida de la simetría en una distribución. Un conjunto de datos simétrico tendrá un sesgo igual a 0. Por lo tanto, una distribución normal tendrá un sesgo de 0. Para corregir el sesgo, estoy tomando el registro de todos los predictores numéricos con un sesgo absoluto superior a 0,8 (en realidad: log + 1, para evitar problemas de división por cero).
+
+```{r}
+for(i in 1:ncol(DFnumeric)){
+        if (abs(skew(DFnumeric[,i]))>0.8){
+                DFnumeric[,i] <- log(DFnumeric[,i] +1)
+        }
+}
+```
+
+AL tener las variables numéricas, deseamos normalizarlas obtenendo media y std.
+```{r}
+PreNum <- preProcess(DFnumeric, method=c("center", "scale"))
+DFnorm <- predict(PreNum, DFnumeric)
+```
+
+Y para el caso de las variables categóricas, se buscan hacer variables dummy para cada una de ellas. 
+
+```{r}
+DFdummies <- as.data.frame(model.matrix(~.-1, DFfactors))
+```
+Previo al modelo es recomendable una limpieza de aquellas variables que no cuentan con información el el set de prueba, para así descartarlas en la parte del entrenamiento.
+
+```{r}
+ZerocolTest <- which(colSums(DFdummies[(nrow(dataset[!is.na(dataset$SalePrice),])+1):nrow(dataset),])==0)
+colnames(DFdummies[ZerocolTest])
+DFdummies <- DFdummies[,-ZerocolTest]
+```
+
+Realizamos el mismo ejercicio para el entrenamiento, se detectan casos y re eliminan las columnas
+```{r}
+#check if some values are absent in the train set
+ZerocolTrain <- which(colSums(DFdummies[1:nrow(dataset[!is.na(dataset$SalePrice),]),])==0)
+colnames(DFdummies[ZerocolTrain])
+DFdummies <- DFdummies[,-ZerocolTrain]
+```
+
+Además descatamos las variables dummy que tiene una precencia menor
+
+```{r}
+fewOnes <- which(colSums(DFdummies[1:nrow(dataset[!is.na(dataset$SalePrice),]),])<10)
+colnames(DFdummies[fewOnes])
+DFdummies <- DFdummies[,-fewOnes] 
+
+```
+
+Con los cambios correspondientes por tipo de variables, procedemos a unirla, y de nueva cuenta repartir el set de entremaniento.
+
+Validamos la correcta inputacion de las variables: 
+```{r}
+combined <- cbind(DFnorm, DFdummies) 
+na.cols <- which(colSums(is.na(combined)) > 0)
+na.cols
+```
+
+```{r}
+skew(dataset$SalePrice)
+train <- combined[dataset$source=="TRAIN",]
+test <- combined[dataset$source=="TEST",]
+```
+
+```{r}
+dataset$SalePrice<-log(dataset$SalePrice)
+```
+
+##Ridge
+Usando set de entrenamiento y prueba de casos anteriores
+
+```{r}
+library(caret)
+tr.control <- trainControl(method="repeatedcv", number = 10,repeats = 10)
+lambdas <- seq(1,0,-.001)
+set.seed(123)
+
+datafull<-train
+datafull$SalePrice<-dataset$SalePrice[!is.na(dataset$SalePrice)]
+ridge_model <- train(SalePrice~., data=datafull,method="glmnet",metric="RMSE",
+                     maximize=FALSE,trControl=tr.control,
+                     tuneGrid=expand.grid(alpha=0,lambda=lambdas))
+```
+
+Aplicando predicción para el set de prueba y comparando con las predicciones anteriores.
+
+
+```{r}
+predictions_ridge <- exp(predict(ridge_model,newdata = test))
+result <- data.frame(SalesPrice_R=(predictions_ridge))
+head(result)
+```
+
+
+##XGBoost model
+
+USando el tratamiento previo de nuestros datos y aplicando el formato necesario para este desarrollo.
+
+```{r}
+# Variable objetivo 
+label_train <- dataset$SalePrice[!is.na(dataset$SalePrice)]
+
+# Creación de la Matrices para entrenamiento y prueba
+dtrain <- xgb.DMatrix(data = as.matrix(train), label= label_train)
+dtest <- xgb.DMatrix(data = as.matrix(test))
+```
+
+definicion de parametros
+
+```{r}
+default_param<-list(objective = "reg:linear",booster = "gbtree",eta=0.05,
+        gamma=0,max_depth=3, min_child_weight=4, subsample=1,colsample_bytree=1
+)
+```
+
+La idea al aplicar cross validation es ir iterando en base a los parámetros y sobre cada iteración ir reduciendo el error hasta encontrar la mejor de ellas. 
+
+```{r}
+xgbcv <- xgb.cv( params = default_param, data = dtrain, nrounds = 700, nfold = 5, showsd = T, stratified = T, print_every_n = 40, early_stopping_rounds = 10, maximize = F,watchlist = list(train=dtrain, test=dtest))
+```
+
+En base la  validación cruzada se determina que el número exacto de nrounds es 366 ya que en este punto se obtiene la coordenada dónde la función tiene su mínimo valor, que en este caso, indicará el menor error.
+
+```{r}
+#En base a la mejor iteración obtenida por CV
+xgb_mod <- xgb.train(data = dtrain, params=default_param, nrounds = 366)
+```
+Al gual que en el ejercicio anterio, consideramos importante saber cuales han sido las variables de mayor importancia. 
+```{r}
+# Variables de Importancia.
+imp=xgb.importance(colnames(dtrain), model = xgb_mod)
+print(imp)
+```
+
+En este caso las variables relevantes son aquellas relacionadas directamente con la superficie, antiguedad y espacios de estacionamiento. TotalInsideSF, TotalSF,X1stFlrSF,Antiguedad,GarageCars.
+
+```{r}
+XGBpred <- predict(xgb_mod, dtest)
+predictions_XGB <- exp(XGBpred) 
+result_xgb <- data.frame(Id = read.csv("C:/Users/bi_ar/Desktop/Tarea/test.csv")$Id, SalePrice_X= (predictions_XGB))
+
+head(result_xgb)
+```
+
+Comparand ambos modelos, tenemos
+
+```{r}
+result <- data.frame( SalesPrice_R=(predictions_ridge),SalePrice_X= (predictions_XGB))
+head(result)
+```
+
+
+## Regresion Lasso
+
+```{r}
+set.seed(27042018)
+my_control <-trainControl(method="cv", number=5)
+lassoGrid <- expand.grid(alpha = 1, lambda = seq(0.001,0.1,by = 0.0005))
+lasso_mod <- train(x=train, y=dataset$SalePrice[!is.na(dataset$SalePrice)], method='glmnet', trControl= my_control, tuneGrid=lassoGrid) 
+
+```
+
+Revisando el output:
+
+```{r}
+lassoVarImp <- varImp(lasso_mod,scale=F)
+lassoImportance <- lassoVarImp$importance
+cat("variables importantes: ",length(which(lassoImportance$Overall!=0)))
+```
+
+Dentro de estas variables importantes se pueden mencionar algunas como : 
+Calidad de la construcción y acabados de la propiedad
+El vecindario
+Tipo de acceso ( si contaba con pavimentación)
+Tipo de venta
+
+
+```{r}
+LassoPred <- predict(lasso_mod, test)
+predictions_lasso <- exp(LassoPred) 
+
+result_lasso <- data.frame(Id = read.csv("C:/Users/bi_ar/Desktop/Tarea/test.csv")$Id, SalePrice_Lasso= (predictions_lasso))
+
+head(result_lasso)
+```
+
+En vista de los tres modelos : 
+
+```{r}
+result <- data.frame( SalesPrice_R=(predictions_ridge),SalePrice_X= (predictions_XGB),SalePrice_Lasso= (predictions_lasso))
+head(result)
+```
