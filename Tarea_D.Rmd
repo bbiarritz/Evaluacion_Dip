@@ -1,4 +1,15 @@
 
+## Ejercicio Kaggle: House Prices
+
+*Gonzalez Hernández Katia
+*Moreno Guevara Beatriz 
+*Rosales Reyes Luis René
+*Valdez León Cesar
+
+El propósito del presente ejercicio es estimar los precios de las viviendas en base a diversas características de la mima, englobando metraje, calidad en acabados y contrucción, tipo de acceso entre otras. A través de ellos se estimará el precio correspondiente.
+
+Empezaremos el ejercicio con un tratamiento general de los datos, para posteriormente aplicar los modelos.
+
 ```{r, message=FALSE, warning=FALSE}
 library(knitr)
 library(ggplot2)
@@ -15,7 +26,7 @@ library(psych)
 library(xgboost)
 ```
 
-Cargamos los datos correpondiente
+Cargamos los datos correpondientes, uninendo universos de prueba y entrenamiento a fin de homologar el tratamiento de los datos, posteriormente se separarán. 
 
 ```{r}
 train <-read.csv("C:/Users/bi_ar/Desktop/Tarea/train.csv")
@@ -29,7 +40,7 @@ dataset <- rbind(train, test)
 dataset$Id<-NULL
 ```
 
-DE manera adicional y revisando la descripción de los datos, se tiene presente que existen variables de tipo factor que pueden estar siendo interpretadas como numéricas. Por ello procedemos a hacer el cambio.
+De manera adicional y revisando la descripción de los datos, se tiene presente que existen variables de tipo factor que pueden estar siendo interpretadas como numéricas. Por ello procedemos a hacer el cambio.
 
 ```{r}
 #Cambiando a factor las variables que lo son:
@@ -91,7 +102,7 @@ dataset[,name_car] <- lapply(dataset[,name_car], function(x){
 })
 ```
 
-LA inputación con cero para variables numéricas excepto SalePrice
+La inputación con cero para variables numéricas excepto SalePrice
 ```{r}
 # Cambio de las variables numericas
 ws<-name_num[-34]
@@ -108,7 +119,7 @@ na.cols
 Además de las variables con las que ya contamos, es importante cosiderar algunas otras ue pueden ser de importancia para el análisis, por ello: 
 
 ```{r}
-# New features
+# Variables adicionales
 dataset['Flag_remodelada'] <- ifelse(dataset$YearRemodAdd == dataset$YearBuilt, 0, 1)
 dataset['Flag_nueva']<-ifelse(dataset$YearBuilt == dataset$YrSold, 1, 0) 
 cat<-c("Flag_remodelada","Flag_nueva")
@@ -131,15 +142,13 @@ cambio<-c("YearBuilt","YearRemodAdd","GarageYrBlt","YrSold","MoSold")
 dataset[,cambio] <- lapply(dataset[,cambio] , factor)
 ```
 
-Otra de las consideraciones que tenemos en cuenta es la eliminación de aquellas variables que previemente habíamos observado, tenían una alta correlación con nuestra variable objetivo.
+Otra de las consideraciones que tenemos en cuenta es la eliminación de aquellas variables que previamente habíamos observado, tenían una alta correlación con nuestra variable objetivo.
 ```{r}
 #Borramos variables altamente correlacionadas
-dropVars <- c('YearRemodAdd', 'GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalBsmtSF', 'TotalRmsAbvGrd', 'BsmtFinSF1')
-dataset <- dataset[,!(names(dataset) %in% dropVars)]
+borrando <- c('YearRemodAdd', 'GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalBsmtSF', 'TotalRmsAbvGrd', 'BsmtFinSF1')
+dataset <- dataset[,!(names(dataset) %in% borrando)]
 ```
-
-
-
+Separando el total de nuestra base para aplicar normalización y OHE de aquellas variables categóricas, hacemos las separación según corresponde.
 ```{r}
 nums <- unlist(lapply(dataset, is.numeric)) 
 name_num<-names(nums[nums==TRUE])
@@ -156,8 +165,7 @@ DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
 ```
 
 Normalizando variables numéricas
-La asimetría es una medida de la simetría en una distribución. Un conjunto de datos simétrico tendrá un sesgo igual a 0. Por lo tanto, una distribución normal tendrá un sesgo de 0. Para corregir el sesgo, estoy tomando el registro de todos los predictores numéricos con un sesgo absoluto superior a 0,8 (en realidad: log + 1, para evitar problemas de división por cero).
-
+Para normalziar los datos hacemos la consideración que bajo un sesgo mayor a 0.8 absoluto, aplicaremos el logaritmos mas uno  de las variable en cuentión. La idea es que aquellos datos que sean simétricos presentarán un sesgo igual a cero, y por tanto su distribución normal lo será del mismo modo. 
 ```{r}
 for(i in 1:ncol(DFnumeric)){
         if (abs(skew(DFnumeric[,i]))>0.8){
