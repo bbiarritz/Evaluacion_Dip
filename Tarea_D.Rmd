@@ -155,7 +155,7 @@ DFfactors$source<-NULL
 DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
 ```
 
-#Normalizando variables numéricas
+Normalizando variables numéricas
 La asimetría es una medida de la simetría en una distribución. Un conjunto de datos simétrico tendrá un sesgo igual a 0. Por lo tanto, una distribución normal tendrá un sesgo de 0. Para corregir el sesgo, estoy tomando el registro de todos los predictores numéricos con un sesgo absoluto superior a 0,8 (en realidad: log + 1, para evitar problemas de división por cero).
 
 ```{r}
